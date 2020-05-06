@@ -1,0 +1,91 @@
+---
+title: "Data Mining Project"
+author: 
+output: 
+  html_document:
+    toc: true
+    toc_depth: 3
+    theme: cerulean
+    highlight: tango
+---
+
+```{r setup, include=FALSE, message=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+#install.packages("openxlsx")
+library("openxlsx")
+library(dplyr)
+
+
+```
+
+## R Markdown
+
+Our client is an online greeting card company. The company offers monthly subscriptions at a rate of $1 per month for access to their eCard website. The client is interested in understanding the life-time value (ltv) of their customers.
+The life-time value of a customer is defined as the total revenue earned by the company over the course of their relationship with the customer.
+The enclosed (synthetic) data represent usage statistics for 10,000 customers. Usage is summarized at a daily level and covers a period of 4 years from 2011-01-01 to 2014-12-31.
+The following is a description of each field captured in the enclosed data set containing a total of 10,000 customers.
+
+| Data Field | Description                                                                         | 
+|------------|-------------------------------------------------------------------------------------|
+| `id`       | A unique user identifier                                                            |
+| `status`   | Subscription status ‘0’- new, ‘1’- open, ‘2’- cancelation event                     |
+| `gender`   | User gender ‘M’- male, ‘F’- female                                                  |
+| `date`     | Date of in which user ‘id’ logged into the site                                     |
+| `pages`    | Number of pages visted by user ‘id’ on date ‘date’                                  |
+| `onsite`   | Number of minutes spent on site by user ‘id’ on date ‘date’                         |
+| `entered`  | Flag indicating whether or not user entered the send order path on date ‘date’      |
+| `completed`| Flag indicating whether the user completed the order (sent an eCard)                |
+| `holiday`  | Flag indicating whether at least one completed order included a holiday themed card |
+
+We must preprocess the data to determine the following: 
+
+| Data Field | Description                                                                         | 
+|------------|-------------------------------------------------------------------------------------|
+| `lifespan` | The lifespan of each customer in days, for cancelled customers= cancelDate-openDate,|
+|            | for open customers=maxDate-openDate+1/(cancelled customers/total customers)         |
+
+```{r, cache=TRUE}
+#load the ltv dataset file
+customer.data <- read.xlsx("C:\\Users\\nelli\\Downloads\\ltv Dataset.xlsx",sheet = 1, colNames = TRUE)
+#convert the data from numeric to date type 
+customer.data$date <- as.Date(customer.data$date, origin = "1899-12-30")
+
+#Calculate the customer lifespan 
+#first group the data by ID to find the max and min date for a given customer
+#along with the latest status 
+customer.lifespan <- customer.data[, c("id", "date", "status")] %>% group_by(id)
+customer.lifespan <-customer.lifespan %>% mutate(maxDate = max(date)) 
+customer.lifespan <-customer.lifespan %>% mutate(status = max(status)) 
+customer.lifespan <- customer.lifespan %>% filter(date == min(date)) %>% rename(minDate = date)
+#Subtract the maxDate and minDate to determine the number of days of subscription
+customer.lifespan$subDays <- difftime(customer.lifespan$maxDate, customer.lifespan$minDate, units = "days")
+#Determine the observed lifespan factor to be added
+lifespanFraction <- 1/(with(1, sum(customer.data$status == 2))/10000)
+#calculate the lifespan for the customers
+customer.lifespan$lifespan <- ifelse(customer.lifespan$status == 2, customer.lifespan$subDays, customer.lifespan$subDays + lifespanFraction)
+#add this data to the main dataset 
+customer.data$lifespan <- customer.lifespan$lifespan[match(customer.data$id,customer.lifespan$id)]
+
+```
+
+## 1.	Develop an attrition model, to predict whether a customer will cancel their subscription in the near future. Characterize your model performance.
+
+
+```{r}
+
+```
+
+## 2.	Develop a model for estimating the ltv of a customer. Characterize your model performance.
+
+
+```{r}
+
+```
+
+## 3.	Develop a customer segmentation scheme. Include in this scheme the identification of sleeping customers, those that are no longer active but have not canceled their account.
+
+
+```{r}
+
+```
+
