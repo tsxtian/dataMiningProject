@@ -1,0 +1,279 @@
+---
+title: "ltvProject"
+output: html_document
+---
+
+
+## R Markdown
+
+Our client is an online greeting card company. The company offers monthly subscriptions at a rate of $1 per month for access to their eCard website. The client is interested in understanding the life-time value (ltv) of their customers.
+The life-time value of a customer is defined as the total revenue earned by the company over the course of their relationship with the customer.
+The enclosed (synthetic) data represent usage statistics for 10,000 customers. Usage is summarized at a daily level and covers a period of 4 years from 2011-01-01 to 2014-12-31.
+The following is a description of each field captured in the enclosed data set containing a total of 10,000 customers.
+
+| Data Field | Description                                                                         | 
+|------------|-------------------------------------------------------------------------------------|
+| `id`       | A unique user identifier                                                            |
+| `status`   | Subscription status ‘0’- new, ‘1’- open, ‘2’- cancelation event                     |
+| `gender`   | User gender ‘M’- male, ‘F’- female                                                  |
+| `date`     | Date of in which user ‘id’ logged into the site                                     |
+| `pages`    | Number of pages visted by user ‘id’ on date ‘date’                                  |
+| `onsite`   | Number of minutes spent on site by user ‘id’ on date ‘date’                         |
+| `entered`  | Flag indicating whether or not user entered the send order path on date ‘date’      |
+| `completed`| Flag indicating whether the user completed the order (sent an eCard)                |
+| `holiday`  | Flag indicating whether at least one completed order included a holiday themed card |
+
+We must preprocess the data to determine the following: 
+
+| Data Field | Description                                                                         | 
+|------------|-------------------------------------------------------------------------------------|
+| `lifespan` | The lifespan of each customer in days, for cancelled customers= cancelDate-openDate,|
+|            | for open customers=maxDate-openDate+1/(cancelled customers/total customers)         |
+
+
+```{r, message=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ISLR)
+library(partykit)
+library(caret)
+library(rpart)
+library(randomForest)
+library(pROC)
+library(readxl)
+library(binaryLogic)
+library(dplyr)
+library(class)
+library(DMwR)
+library(nnet)
+library(e1071)
+```
+
+```{r, cache = TRUE}
+# Importing teh data directly from Excel
+customer.data <- read_excel("Downloads/ltv Dataset.xlsx", sheet = "Sheet1")
+```
+
+```{r, cache = TRUE}
+# Transform the data to teh desired format
+customer.data <- transform(
+  customer.data,
+  id=as.integer(id),
+  status=as.integer(status),
+  gender=as.factor(gender),
+  date=as.Date(date),
+  pages=as.integer(pages),
+  onsite=as.integer(onsite),
+  entered=as.integer(entered),
+  completed=as.integer(completed),
+  holiday=as.integer(holiday)
+)
+```
+
+```{r}
+#processing the date
+customer.data$date <- as.Date(customer.data$date,'%m/%d/%Y')
+customer.data$month <- months(customer.data$date)
+customer.data$year <- format(customer.data$date,format = '%Y')
+```
+
+```{r}
+#calculate the average value
+ltv.pages <- aggregate( pages ~ id+ month + year, customer.data, mean)
+ltv.onsite <- aggregate( onsite ~ id + month + year, customer.data, mean)
+#merger the table
+ltv.m1 <- merge(x = ltv.pages, y = ltv.onsite, by = c('id','month','year'), all.x = TRUE)
+```
+
+```{r}
+#sort the dataframe and export it
+ltv.m1 <- ltv.m1[order(ltv.m1$id),]
+ltv.m1
+write.csv(ltv.m1,'ltv_modelOne.csv',row.names = FALSE)
+```
+
+```{r, cache=TRUE}
+#convert the data from numeric to date type (duplicate) 
+#customer.data$date <- as.Date(customer.data$date, origin = "1899-12-30")
+#Calculate the customer lifespan 
+#first group the data by ID to find the max and min date for a given customer
+#along with the latest status 
+customer.lifespan <- customer.data[, c("id", "date", "status")] %>% group_by(id)
+customer.lifespan <-customer.lifespan %>% mutate(maxDate = max(date)) 
+customer.lifespan <-customer.lifespan %>% mutate(status = max(status)) 
+customer.lifespan <- customer.lifespan %>% filter(date == min(date)) %>% distinct(id, .keep_all = TRUE) %>% rename(minDate = date)
+
+#Subtract the maxDate and minDate to determine the number of days of subscription
+customer.lifespan$subDays <- difftime(customer.lifespan$maxDate, customer.lifespan$minDate, units = "days")
+#Determine the observed lifespan factor to be added
+lifespanFraction <- 1/(with(1, sum(customer.data$status == 2))/10000)
+#calculate the lifespan for the customers
+customer.lifespan$lifespan <- ifelse(customer.lifespan$status == 2, customer.lifespan$subDays, customer.lifespan$subDays + lifespanFraction)
+#add this data to the main dataset 
+customer.data$lifespan <- customer.lifespan$lifespan[match(customer.data$id,customer.lifespan$id)]
+```
+
+```{r, cache = TRUE}
+# Add 2 columns in the dataframe representing completed/holiday and onsite/entered
+ltv_afterProcess <- transform(
+  customer.data,
+  CompletedVSHoliday=as.integer(entered)/as.integer(holiday),
+  OnsiteVSEntered=as.integer(onsite)/as.integer(entered)
+)
+```
+
+```{r, cache = TRUE}
+# calculate the ratio between sum of all entered and sum of all completed
+SumEnteredVSCompleted <- sum(ltv_afterProcess$entered)/sum(ltv_afterProcess$completed)
+SumEnteredVSCompleted
+```
+
+```{r, cache = TRUE}
+# create a new dataframe representing teh aggregated summation of each variable per customer
+aggregatedCustomerSums <- aggregate(cbind(PagesSum=ltv_afterProcess$pages, OnsiteSum=ltv_afterProcess$onsite, EnteredSum=ltv_afterProcess$entered, CompletedSum=ltv_afterProcess$completed, HolidaySum=ltv_afterProcess$holiday), by=list(Customerid=ltv_afterProcess$id), FUN=sum)
+
+aggregatedCustomerSums<-merge(x = aggregatedCustomerSums, y = customer.data, intersect(names(aggregatedCustomerSums), names(customer.data)), by.x = "Customerid", by.y = "id", all.x=TRUE)[,c(names(aggregatedCustomerSums), "gender")]%>% distinct(Customerid, .keep_all=TRUE)
+
+aggregatedCustomerSums <- transform(
+  aggregatedCustomerSums,
+  gender = as.factor(gender),
+  lifespan = customer.lifespan$lifespan,
+  decisiveratio = CompletedSum / EnteredSum
+)
+
+aggregatedCustomerSums <- rename(aggregatedCustomerSums, id = Customerid, pages = PagesSum, onsite = OnsiteSum, entered = EnteredSum, completed = CompletedSum, holiday = HolidaySum)
+```
+
+```{r}
+#pre-processed dataset outputs
+view(ltv.m1)
+view(customer.lifespan)
+view(aggregatedCustomerSums)
+```
+
+
+## 1.	Develop an attrition model, to predict whether a customer will cancel their subscription in the near future. Characterize your model performance.
+
+```{r}
+```
+
+## 2.	Develop a model for estimating the ltv of a customer. Characterize your model performance.
+
+```{r}
+```
+
+## 3.	Develop a customer segmentation scheme. Include in this scheme the identification of sleeping customers, those that are no longer active but have not canceled their account.
+
+
+- Segmentation 2: Decisive customers, Tentative customers, Hesitant customers
+- Variables: Gender, onsite, pages, entered, completed
+- Classification label: completed / entered 
+  - 2: if the `decisiveratio` of that customer is greater or equal to `r summary(aggregatedCustomerSums$decisiveratio)[5]` then we classfy the customer as decisive
+  - 1: if the `decisiveratio` of that customer fall in the range of `r summary(aggregatedCustomerSums$decisiveratio)[2]` and `r summary(aggregatedCustomerSums$decisiveratio)[5]`, then we classfy the customer as tentative
+  - 0: if the `decisiveratio` of that customer is smaller than `r summary(aggregatedCustomerSums$decisiveratio)[2]` , then we classfy the customer as hesitant
+
+
+```{r}
+summary(aggregatedCustomerSums$decisiveratio)
+```
+
+
+```{r}
+# create data labels 
+decisivelabel <- with(aggregatedCustomerSums, ifelse(decisiveratio >= summary(aggregatedCustomerSums$decisiveratio)[5], 2, ifelse(decisiveratio >= summary(aggregatedCustomerSums$decisiveratio)[2],1,0)))
+# merge the created label with selected data
+decisive.data <- data.frame(aggregatedCustomerSums[c("pages", "onsite","holiday","gender","lifespan")], decisivelabel = as.factor(decisivelabel))
+
+set.seed(42)
+
+# separate data into train, test data
+#randomly get 2/3 data of each label into train data, 1/3 data of each label into test data
+
+hesitant<-subset(decisive.data, decisivelabel == 0)
+tentative<-subset(decisive.data, decisivelabel == 1)
+decisive<-subset(decisive.data, decisivelabel == 2)
+
+train.h<-hesitant[sample(nrow(hesitant),), ][c(1:1658), ]
+test.h<-hesitant[sample(nrow(hesitant),), ][c(1659:2487), ]
+train.t<-tentative[sample(nrow(tentative),), ][c(1:3155),]
+test.t<-tentative[sample(nrow(tentative),), ][c(3156:4732),]
+train.d<-decisive[sample(nrow(decisive),), ][c(1:1854),]
+test.d<-decisive[sample(nrow(decisive),), ][c(1854:2781),]
+
+decisive.train<-rbind(train.h, train.t, train.d)
+decisive.test<-rbind(test.h, test.t, test.d)
+```
+
+```{r, cache = TRUE}
+# Random Forest
+
+# build the random forest model for classification
+customer.rf <- randomForest(decisivelabel~., data=decisive.train, ntree=500, proximity=T)
+customer.rf
+customer.rf.predict <- predict(customer.rf, decisive.test)
+customer.rf.table <- table(customer.rf.predict, decisive.test$decisivelabel)
+customer.rf.table
+
+# calculate the accuracy of our random forest model
+customer.rf.misclassificationrate = mean(customer.rf.predict != decisive.test$decisivelabel)
+customer.rf.accuracy <- 1- customer.rf.misclassificationrate
+customer.rf.accuracy
+```
+
+
+```{r}
+# KNN
+train_control <- trainControl(method = "cv", number = 10)
+customer.knn <- train(decisivelabel~., data = decisive.train, trControl = train_control, method = "knn")
+customer.knn
+customer.knn.predict <- predict(customer.knn, decisive.test)
+customer.knn.table <- table(customer.knn.predict, decisive.test$decisivelabel)
+customer.knn.table
+
+# calculate the accuracy of our random forest model
+customer.knn.misclassificationrate = mean(customer.knn.predict != decisive.test$decisivelabel)
+customer.knn.accuracy <- 1- customer.knn.misclassificationrate
+customer.knn.accuracy
+```
+
+```{r}
+# Mulrinomial Logistic Regression
+decisve.ml <- multinom(decisivelabel ~ . , data = decisive.train)
+
+decisve.ml
+logit.pred <- decisve.ml %>% predict(decisive.test)
+
+conf.mat.logit<-table(logit.pred, decisive.test$decisivelabel)
+conf.mat.logit
+
+logit.accuracy<- sum(diag(conf.mat.logit)) / sum(conf.mat.logit)
+logit.accuracy
+```
+
+```{r}
+# Naive Bayes
+
+decisive.nb <-naiveBayes(decisivelabel ~ . , data = decisive.train, laplace=1)
+decisive.nb.pred <- predict(decisive.nb, decisive.test)
+
+conf.mat.nb<-table(decisive.nb.pred, decisive.test$decisivelabel)
+conf.mat.nb
+
+nb.accuracy<- sum(diag(conf.mat.nb)) / sum(conf.mat.nb)
+nb.accuracy
+
+```
+
+```{r}
+#SVM
+decisive.svm <-svm(decisivelabel ~ . , data = decisive.train, type = 'C-classification', kernel = 'radial')
+decisive.svm.pred <- predict(decisive.svm, decisive.test)
+
+conf.mat.svm<-table(decisive.svm.pred, decisive.test$decisivelabel)
+conf.mat.svm
+
+svm.accuracy<- sum(diag(conf.mat.svm)) / sum(conf.mat.svm)
+svm.accuracy
+```
+
+## Random forest is the best
